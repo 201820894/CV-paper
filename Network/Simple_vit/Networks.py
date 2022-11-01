@@ -51,7 +51,7 @@ class MultiheadedSelfAttention(nn.Module):
         k = self.key(x)
         v = self.value(x)
 
-        # Original: (B, N, embedded_vec_dim)
+        # Original: (B, N, embedded_vec_dim): After embedding
         # After transformation: (B, num_heads, N, head_dims)
         q = q.view(batch_size, -1, self.num_heads,
                    self.head_dim).permute(0, 2, 1, 3)

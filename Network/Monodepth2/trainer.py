@@ -66,7 +66,7 @@ class Trainer:
         self.models["pose_encoder"] = networks.ResnetEncoder(
             self.opt.num_layers, self.opt.weight_init == "pretrained",
             # num_input_images=self.num_pose_frames: 2개의 image를 받음
-            num_input_images=self.num_pose_frames # 2
+            num_input_images=self.num_pose_frames  # 2
         )
         self.models["pose_encoder"].to(self.device)
         self.parameters_to_train += list(
@@ -238,7 +238,7 @@ class Trainer:
         # 이거 하나 안에 하나의 batch가 들어있는거
         features = self.models["encoder"](inputs["color_aug", 0, 0])
         # depth map
-        # 여기서 처음 만들어지고 추가되는거 
+        # 여기서 처음 만들어지고 추가되는거
         # self.outputs[("disp", i)]=self.sigmoid(self.convs[("dispconv", i)](x))
         # i는 scale
         outputs = self.models["depth"](features)
@@ -253,6 +253,7 @@ class Trainer:
 
         return outputs, losses
 
+    # 얘를 바꿔야함
     def predict_poses(self, inputs):
         """Predict poses between input frames for monocular sequences.
         """
@@ -270,9 +271,9 @@ class Trainer:
 
         # -1, 0 또는 0, 1 순서대로 정렬
         for f_i in self.opt.frame_ids[1:]:
-            if f_i < 0: # -1
+            if f_i < 0:  # -1
                 pose_inputs = [pose_feats[f_i], pose_feats[0]]
-            else: # 1
+            else:  # 1
                 pose_inputs = [pose_feats[0], pose_feats[f_i]]
         # Input (B, 3, H, W)
         # (B, 6, H, W)를 넘겨줌
@@ -293,7 +294,7 @@ class Trainer:
         pipeline에 따라 달라짐(s->t라고 장담못함)
         둘다 2개의 axisangle, translation 중 첫번째를 넣음
         
-        t->s임
+        target->source(t->t')
         """
         outputs[("axisangle", 0, f_i)] = axisangle
         outputs[("translation", 0, f_i)] = translation
@@ -306,11 +307,12 @@ class Trainer:
         """
         outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
             axisangle[:, 0], translation[:, 0], invert=(f_i < 0))
-        
-        # outputs[("cam_T_cam", 0, f_i)]이 source->target 의 transformation matrix
-        # source가 t'이고 target이 t
-        # t frame이 source인데 notation을 t' 이라고 
-        # 그니까 source -> target transform해서 original target이랑 비교하는거
+
+        # outputs[("cam_T_cam", 0, f_i)]이 target->source 의 transformation matrix
+        # source가 t'(t' frame)이고 target이 t(t frame)
+        # transformation matrix는 target->source  T_t->t'
+        # 얘로 target(t)을 source(t')관점에서 본 이미지 좌표를 끌어낸 후
+        # grid sampling 을 통해 source 관점에서 본 이미지를 target 관점으로 reprojection(I_t'->t)
         return outputs
 
     def val(self):
@@ -353,7 +355,7 @@ class Trainer:
             outputs[("depth", 0, scale)] = depth
             #-1, 1
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
-                
+
                 # 여기서 0은 scale
                 T = outputs[("cam_T_cam", 0, frame_id)]
 
@@ -467,7 +469,7 @@ class Trainer:
             combined = torch.cat(
                 (identity_reprojection_loss, reprojection_loss), dim=1
             )
-##  
+##
             # identity_reprojection_loss와 reprojection_loss 중 가장 작은 값을 선택합니다.
             # 만약 identity_reprojection_loss 중에서 가장 작은 부분이 선택된다면
             # 두 Frame 간 static 한 픽셀에 의해 loss가 가장 작아서 선택 된 것으로 가정하며
