@@ -4,3 +4,6 @@ models/
 kitti_data/
 models/
 Presentation/
+*.pyc
+*.DS_Store
+*.swp

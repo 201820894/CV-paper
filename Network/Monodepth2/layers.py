@@ -1,8 +1,10 @@
-from sre_parse import ESCAPES
+from pathlib import Path
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from superglue_networks import *
 
 # depth = (baseline * focal length) / disparity)
 
@@ -339,47 +341,86 @@ def compute_depth_errors(gt, pred):
 
     return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
 
-class fSEModule(nn.Module):
-    def __init__(self, high_feature_channel, low_feature_channels, output_channel=None):
-        super(fSEModule, self).__init__()
-        in_channel = high_feature_channel + low_feature_channels
-        out_channel = high_feature_channel
-        if output_channel is not None:
-            out_channel = output_channel
-        reduction = 16
-        channel = in_channel
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+def match_points(
+    input_pairs, input_dir, resize_float=True, max_length=-1, superglue='outdoor', max_keypoints=1024, keypoint_threshold=0.005, 
+    nms_radius=4, sinkhorn_iterations=20, match_threshold=0.2, resize=[640,480], shuffle=True):
 
-        self.fc = nn.Sequential(
-            nn.Linear(channel, channel // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channel // reduction, channel, bias=False)
-        )
+    torch.set_grad_enabled(False)
+    if len(resize) == 2 and resize[1] == -1:
+        resize = resize[0:1]
+    if len(resize) == 2:
+        print('Will resize to {}x{} (WxH)'.format(
+            resize[0], resize[1]))
+    elif len(resize) == 1 and resize[0] > 0:
+        print('Will resize max dimension to {}'.format(resize[0]))
+    elif len(resize) == 1:
+        print('Will not resize images')
+    else:
+        raise ValueError('Cannot specify more than two integers for --resize')
 
-        self.sigmoid = nn.Sigmoid()
+    with open(input_pairs, 'r') as f:
+        pairs = [l.split() for l in f.readlines()]
 
-        self.conv_se = nn.Conv2d(in_channels=in_channel, out_channels=out_channel, kernel_size=1, stride=1)
-        self.relu = nn.ReLU(inplace=True)
+    if max_length > -1:
+        pairs = pairs[0:np.min([len(pairs), max_length])]
 
-    def forward(self, high_features, low_features):
-        features = [upsample(high_features)]
-        features += low_features
-        features = torch.cat(features, 1)
+    if shuffle:
+        random.Random(0).shuffle(pairs)
 
-        b, c, _, _ = features.size()
-        y = self.avg_pool(features).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
+    # Load the SuperPoint and SuperGlue models.
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print('Running inference on device \"{}\"'.format(device))
+    config = {
+        'superpoint': {
+            'nms_radius': nms_radius,
+            'keypoint_threshold': keypoint_threshold,
+            'max_keypoints': max_keypoints
+        },
+        'superglue': {
+            'weights': superglue,
+            'sinkhorn_iterations': sinkhorn_iterations,
+            'match_threshold': match_threshold,
+        }
+    }
+    matching = Matching(config).eval().to(device)
 
-        y = self.sigmoid(y)
-        features = features * y.expand_as(features)
 
-        return self.relu(self.conv_se(features))
+    input_dir = Path(input_dir)
+    timer = AverageTimer(newline=True)
+    match_index=[]
+    for i, pair in enumerate(pairs):
+        name0, name1 = pair[:2]
+        stem0, stem1 = Path(name0).stem, Path(name1).stem
 
-class Conv1x1(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(Conv1x1, self).__init__()
+        do_match = True
+        if len(pair) >= 5:
+            rot0, rot1 = int(pair[2]), int(pair[3])
+        else:
+            rot0, rot1 = 0, 0
 
-        self.conv = nn.Conv2d(in_channels, out_channels, 1, stride=1, bias=False)
+        # Load the image pair.
+        image0, inp0, scales0 = read_image(
+            input_dir / name0, device, resize, rot0, resize_float)
+        image1, inp1, scales1 = read_image(
+            input_dir / name1, device, resize, rot1, resize_float)
+        if image0 is None or image1 is None:
+            print('Problem reading image pair: {} {}'.format(
+                input_dir/name0, input_dir/name1))
+            exit(1)
+        timer.update('load_image')
 
-    def forward(self, x):
-        return self.conv(x)
+        if do_match:
+            # Perform the matching.
+            pred = matching({'image0': inp0, 'image1': inp1})
+            pred = {k: v[0].cpu().numpy() for k, v in pred.items()}
+            kpts0, kpts1 = pred['keypoints0'], pred['keypoints1']
+            matches, conf = pred['matches0'], pred['matching_scores0']
+            timer.update('matcher')
+
+            # Write the matches to disk.
+            out_matches = {'keypoints0': kpts0, 'keypoints1': kpts1,
+                           'matches': matches, 'match_confidence': conf}
+            match_index.append(out_matches)
+        #for i, pair in enumerate(pairs): 안에
+        #return here
+
