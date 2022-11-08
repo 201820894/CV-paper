@@ -86,16 +86,15 @@ def get_translation_matrix(translation_vector):
     return T
 
 
-
 def transformation_from_parameters(axisangle, translation, invert=False):
 
-    # 찐막 target->source임: 근거: depth를 target거만 구함 
+    # 찐막 target->source임: 근거: depth를 target거만 구함
     # 방향이야 뭐 그런가 싶다.
     # -1 ->0 이 잘못된거니까 invert 하는거
 
     # (B, 4, 4)
     R = rot_from_axisangle(axisangle)
-    
+
     t = translation.clone()
 
     if invert:
@@ -341,9 +340,12 @@ def compute_depth_errors(gt, pred):
 
     return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
 
+
+# 전달할 때 어떻게 넣어줄지를 생각
+# input dictionary의 구조
 def match_points(
-    input_pairs, input_dir, resize_float=True, max_length=-1, superglue='outdoor', max_keypoints=1024, keypoint_threshold=0.005, 
-    nms_radius=4, sinkhorn_iterations=20, match_threshold=0.2, resize=[640,480], shuffle=True):
+        input_pairs, input_dir, resize_float=True, max_length=-1, superglue='outdoor', max_keypoints=1024, keypoint_threshold=0.005,
+        nms_radius=4, sinkhorn_iterations=20, match_threshold=0.2, resize=[640, 480], shuffle=True):
 
     torch.set_grad_enabled(False)
     if len(resize) == 2 and resize[1] == -1:
@@ -384,10 +386,9 @@ def match_points(
     }
     matching = Matching(config).eval().to(device)
 
-
     input_dir = Path(input_dir)
     timer = AverageTimer(newline=True)
-    match_index=[]
+    match_index = []
     for i, pair in enumerate(pairs):
         name0, name1 = pair[:2]
         stem0, stem1 = Path(name0).stem, Path(name1).stem
@@ -422,5 +423,5 @@ def match_points(
                            'matches': matches, 'match_confidence': conf}
             match_index.append(out_matches)
         #for i, pair in enumerate(pairs): 안에
-        #return here
-
+        # return here
+    return match_index

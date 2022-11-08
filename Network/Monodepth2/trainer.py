@@ -104,7 +104,8 @@ class Trainer:
 
         datasets_dict = {"kitti": datasets.KITTIRAWDataset,
                          "kitti_odom": datasets.KITTIOdomDataset, }
-        # kitti_depth, kitti_test는 어디감?
+
+        # self.dataset = datasets.KITTIRAWDataset
         self.dataset = datasets_dict[self.opt.dataset]
 
         # os.path.dirname(__file__)은 해당 파일(trainer.py) 의 디렉토리 반환
@@ -120,6 +121,7 @@ class Trainer:
         self.num_total_steps = (
             num_train_samples//self.opt.batch_size) * self.opt.num_epochs
 
+        # KITTIRAWDataset의 객체
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
             self.opt.frame_ids, 4, is_train=True, img_ext=img_ext
@@ -198,6 +200,7 @@ class Trainer:
         print("Training")
         self.set_train()
 
+        # loader에서 가져오는거면 (B, C, H, W)
         for batch_idx, inputs in enumerate(self.train_loader):
             before_op_time = time.time()
 
