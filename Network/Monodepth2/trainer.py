@@ -122,6 +122,8 @@ class Trainer:
             num_train_samples//self.opt.batch_size) * self.opt.num_epochs
 
         # KITTIRAWDataset의 객체
+        # 각 데이터마다 getitem으로 
+        # color, color_aug, scale return
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
             self.opt.frame_ids, 4, is_train=True, img_ext=img_ext
@@ -201,6 +203,7 @@ class Trainer:
         self.set_train()
 
         # loader에서 가져오는거면 (B, C, H, W)
+        # 각 input에 key value 있고 얘들이 batch
         for batch_idx, inputs in enumerate(self.train_loader):
             before_op_time = time.time()
 
@@ -257,6 +260,16 @@ class Trainer:
         return outputs, losses
 
     # 얘를 바꿔야함
+    # batch 단위
+
+    def essential_to_pose(self, inputs):
+        outputs={}
+        sequence = {f_i: inputs["color_aug", f_i, 0]
+                      for f_i in [-1, 0]}
+        sequence[-1]
+        sequence[0]
+
+
     def predict_poses(self, inputs):
         """Predict poses between input frames for monocular sequences.
         """

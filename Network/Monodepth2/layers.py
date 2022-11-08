@@ -360,18 +360,11 @@ def match_points(
     else:
         raise ValueError('Cannot specify more than two integers for --resize')
 
-    with open(input_pairs, 'r') as f:
-        pairs = [l.split() for l in f.readlines()]
-
-    if max_length > -1:
-        pairs = pairs[0:np.min([len(pairs), max_length])]
-
-    if shuffle:
-        random.Random(0).shuffle(pairs)
+    scene0, scene1 =input_pairs
 
     # Load the SuperPoint and SuperGlue models.
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print('Running inference on device \"{}\"'.format(device))
+    #print('Running inference on device \"{}\"'.format(device))
     config = {
         'superpoint': {
             'nms_radius': nms_radius,
@@ -386,10 +379,9 @@ def match_points(
     }
     matching = Matching(config).eval().to(device)
 
-    input_dir = Path(input_dir)
     timer = AverageTimer(newline=True)
     match_index = []
-    for i, pair in enumerate(pairs):
+    for i, pair in enumerate(input_pairs):
         name0, name1 = pair[:2]
         stem0, stem1 = Path(name0).stem, Path(name1).stem
 
