@@ -10,6 +10,12 @@ import hashlib
 import zipfile
 from six.moves import urllib
 import cv2
+from superglue_networks.matching import Matching
+from superglue_networks.utils import (compute_pose_error, compute_epipolar_error,
+                          estimate_pose, make_matching_plot,
+                          error_colormap, AverageTimer, pose_auc, read_image,
+                          rotate_intrinsics, rotate_pose_inplane,
+                          scale_intrinsics)
 
 
 def readlines(filename):
@@ -114,7 +120,7 @@ def download_model_if_doesnt_exist(model_name):
 
         print("   Model unzipped to {}".format(model_path))
 
-    def load_image(self, impath):
+    def load_image(self, img_pair):
         """ Read image as grayscale and resize to img_size.
         Inputs
             impath: Path to input image.
@@ -122,13 +128,28 @@ def download_model_if_doesnt_exist(model_name):
             grayim: uint8 numpy array sized H x W.
         """
         # cv2로 읽어오면 0으로, grayscale convert 필요
-        grayim = cv2.imread(impath, 0)
-        if grayim is None:
-            raise Exception('Error reading image %s' % impath)
 
-        w, h = grayim.shape[1], grayim.shape[0]
+        w, h = img_pair[0].shape[2], img_pair[0].shape[1]
         w_new, h_new = process_resize(w, h, self.resize)
         grayim = cv2.resize(
             grayim, (w_new, h_new), interpolation=self.interp)
             # Resize해서 넣어주기
         return grayim
+    
+    def process_resize(w, h, resize):
+        assert(len(resize) > 0 and len(resize) <= 2)
+        if len(resize) == 1 and resize[0] > -1:
+            scale = resize[0] / max(h, w)
+            w_new, h_new = int(round(w*scale)), int(round(h*scale))
+        elif len(resize) == 1 and resize[0] == -1:
+            w_new, h_new = w, h
+        else:  # len(resize) == 2:
+            w_new, h_new = resize[0], resize[1]
+
+        # Issue warning if resolution is too small or too large.
+        if max(w_new, h_new) < 160:
+            print('Warning: input resolution is very small, results may vary')
+        elif max(w_new, h_new) > 2000:
+            print('Warning: input resolution is very large, results may vary')
+
+        return w_new, h_new
