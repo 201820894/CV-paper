@@ -9,6 +9,7 @@ import os
 import hashlib
 import zipfile
 from six.moves import urllib
+import cv2
 
 
 def readlines(filename):
@@ -112,3 +113,22 @@ def download_model_if_doesnt_exist(model_name):
             f.extractall(model_path)
 
         print("   Model unzipped to {}".format(model_path))
+
+    def load_image(self, impath):
+        """ Read image as grayscale and resize to img_size.
+        Inputs
+            impath: Path to input image.
+        Returns
+            grayim: uint8 numpy array sized H x W.
+        """
+        # cv2로 읽어오면 0으로, grayscale convert 필요
+        grayim = cv2.imread(impath, 0)
+        if grayim is None:
+            raise Exception('Error reading image %s' % impath)
+
+        w, h = grayim.shape[1], grayim.shape[0]
+        w_new, h_new = process_resize(w, h, self.resize)
+        grayim = cv2.resize(
+            grayim, (w_new, h_new), interpolation=self.interp)
+            # Resize해서 넣어주기
+        return grayim

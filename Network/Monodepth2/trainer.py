@@ -14,6 +14,7 @@ from layers import *
 
 import datasets
 import networks
+import torchvision
 
 
 class Trainer:
@@ -267,14 +268,21 @@ class Trainer:
         # scale: 0, frame_id: -1, 0, 1 인거 넣기
         pose_feats = {f_i: inputs["color_aug", f_i, 0]
                       for f_i in self.opt.frame_ids}
+        to_grayscale=torchvision.transforms.Grayscale(num_output_channels=1)
+
+        pose_feats_gray={f_i: torch.squeeze(to_grayscale(pose_feats[f_i]))
+                        for f_i in self.opt.frame_ids}
         
+        # 여기까지가 grayscale
+        # Resize등, superglue에서 사용하는 전처리 작업 필요
+
         # -1, 0 또는 0, 1 순서대로 정렬
         for f_i in self.opt.frame_ids[1:]: #-1, 0
-            # (B, 3, H, W) 2방씩
+            # (B, 1, H, W) 2방씩
             if f_i < 0:  # -1
-                pose_inputs = [pose_feats[f_i], pose_feats[0]]
+                pose_inputs = [pose_feats_gray[f_i], pose_feats_gray[0]]
             else:  # 1
-                pose_inputs = [pose_feats[0], pose_feats[f_i]]
+                pose_inputs = [pose_feats_gray[0], pose_feats_gray[f_i]]
                 
             match_points(pose_inputs)
 

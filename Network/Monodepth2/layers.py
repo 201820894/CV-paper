@@ -4,7 +4,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from superglue_networks import *
+from superglue_networks.matching import Matching
+from superglue_networks.utils import (compute_pose_error, compute_epipolar_error,
+                          estimate_pose, make_matching_plot,
+                          error_colormap, AverageTimer, pose_auc, read_image,
+                          rotate_intrinsics, rotate_pose_inplane,
+                          scale_intrinsics)
 
 # depth = (baseline * focal length) / disparity)
 
@@ -343,6 +348,8 @@ def compute_depth_errors(gt, pred):
 
 # 전달할 때 어떻게 넣어줄지를 생각
 # [(B, C, H, W), (B, 3, H, W)] 의 텐서
+
+
 def match_points(
         input_pairs, resize_float=True, max_length=-1, 
         superglue='outdoor', max_keypoints=1024, keypoint_threshold=0.005,
