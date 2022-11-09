@@ -231,6 +231,7 @@ class Trainer:
 
             self.step += 1
 
+    # 얘가 받는 input은 batch
     def process_batch(self, inputs):
         """Pass a minibatch through the network and generate images and losses
         """
@@ -240,8 +241,6 @@ class Trainer:
         # inputs 중에서 frame_id=0, scale=0인 이미지만 Depth Encoder에 입력으로 넣는다.
         # ("color_aug", <frame_id>, <scale>)
         # frame id: -1, 0, 1/ scale은 0가 원상태
-
-        # 이거 하나 안에 하나의 batch가 들어있는거
         features = self.models["encoder"](inputs["color_aug", 0, 0])
         # depth map
         # 여기서 처음 만들어지고 추가되는거
@@ -263,11 +262,21 @@ class Trainer:
     # batch 단위
 
     def essential_to_pose(self, inputs):
-        outputs={}
-        sequence = {f_i: inputs["color_aug", f_i, 0]
-                      for f_i in [-1, 0]}
-        sequence[-1]
-        sequence[0]
+        
+        outputs = {}
+        # scale: 0, frame_id: -1, 0, 1 인거 넣기
+        pose_feats = {f_i: inputs["color_aug", f_i, 0]
+                      for f_i in self.opt.frame_ids}
+        
+        # -1, 0 또는 0, 1 순서대로 정렬
+        for f_i in self.opt.frame_ids[1:]: #-1, 0
+            # (B, 3, H, W) 2방씩
+            if f_i < 0:  # -1
+                pose_inputs = [pose_feats[f_i], pose_feats[0]]
+            else:  # 1
+                pose_inputs = [pose_feats[0], pose_feats[f_i]]
+                
+            match_points(pose_inputs)
 
 
     def predict_poses(self, inputs):

@@ -45,7 +45,7 @@ class KITTIDataset(MonoDataset):
         color = self.loader(self.get_image_path(
             folder, frame_index, side, do_flip))
         if do_flip:
-            color = color.transpse(pil.FLIP_LEFT_RIGHT)
+            color = color.transpose(pil.FLIP_LEFT_RIGHT)
         return color
 
 class KITTIRAWDataset(KITTIDataset):

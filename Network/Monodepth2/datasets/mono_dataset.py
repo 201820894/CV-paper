@@ -82,7 +82,8 @@ class MonoDataset(data.Dataset):
                 # 여기가 color_aug, scale된 애들에 대해서도 color aug, 그냥 return 그대로
                 inputs[(n, im, i)] = self.to_tensor(f)
                 inputs[(n + "_aug", im, i)] = self.to_tensor(color_aug(f))
-                
+    
+    # Only x
     def __len__(self):
         return len(self.filenames)
     

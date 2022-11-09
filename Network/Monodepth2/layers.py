@@ -342,10 +342,12 @@ def compute_depth_errors(gt, pred):
 
 
 # 전달할 때 어떻게 넣어줄지를 생각
-# input dictionary의 구조
+# [(B, C, H, W), (B, 3, H, W)] 의 텐서
 def match_points(
-        input_pairs, input_dir, resize_float=True, max_length=-1, superglue='outdoor', max_keypoints=1024, keypoint_threshold=0.005,
-        nms_radius=4, sinkhorn_iterations=20, match_threshold=0.2, resize=[640, 480], shuffle=True):
+        input_pairs, resize_float=True, max_length=-1, 
+        superglue='outdoor', max_keypoints=1024, keypoint_threshold=0.005,
+        nms_radius=4, sinkhorn_iterations=20, match_threshold=0.2, 
+        resize=[640, 480], shuffle=True):
 
     torch.set_grad_enabled(False)
     if len(resize) == 2 and resize[1] == -1:
@@ -381,39 +383,19 @@ def match_points(
 
     timer = AverageTimer(newline=True)
     match_index = []
-    for i, pair in enumerate(input_pairs):
-        name0, name1 = pair[:2]
-        stem0, stem1 = Path(name0).stem, Path(name1).stem
-
-        do_match = True
-        if len(pair) >= 5:
-            rot0, rot1 = int(pair[2]), int(pair[3])
-        else:
-            rot0, rot1 = 0, 0
-
-        # Load the image pair.
-        image0, inp0, scales0 = read_image(
-            input_dir / name0, device, resize, rot0, resize_float)
-        image1, inp1, scales1 = read_image(
-            input_dir / name1, device, resize, rot1, resize_float)
-        if image0 is None or image1 is None:
-            print('Problem reading image pair: {} {}'.format(
-                input_dir/name0, input_dir/name1))
-            exit(1)
-        timer.update('load_image')
-
-        if do_match:
-            # Perform the matching.
-            pred = matching({'image0': inp0, 'image1': inp1})
-            pred = {k: v[0].cpu().numpy() for k, v in pred.items()}
-            kpts0, kpts1 = pred['keypoints0'], pred['keypoints1']
-            matches, conf = pred['matches0'], pred['matching_scores0']
-            timer.update('matcher')
-
-            # Write the matches to disk.
-            out_matches = {'keypoints0': kpts0, 'keypoints1': kpts1,
-                           'matches': matches, 'match_confidence': conf}
-            match_index.append(out_matches)
-        #for i, pair in enumerate(pairs): 안에
-        # return here
+    
+    pred = matching({'image0': scene0, 'image1': scene1})
+    pred = {k: v[0].cpu().numpy() for k, v in pred.items()}
+    kpts0, kpts1 = pred['keypoints0'], pred['keypoints1']
+    matches, conf = pred['matches0'], pred['matching_scores0']
+    timer.update('matcher')
+    # Write the matches to disk.
+    out_matches = {'keypoints0': kpts0, 'keypoints1': kpts1,
+                   'matches': matches, 'match_confidence': conf}
+    match_index.append(out_matches)
+    #for i, pair in enumerate(pairs): 안에
+    # return here
     return match_index
+
+def matches_to_essential(match):
+    pass
