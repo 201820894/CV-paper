@@ -65,7 +65,7 @@ class Trainer:
 
         # Pose encoder
         self.models["pose_encoder"] = networks.ResnetEncoder(
-            self.opt.num_layers, self.opt.weight_init == "pretrained",
+            self.opt.num_layers, self.opt.weights_init == "pretrained",
             # num_input_images=self.num_pose_frames: 2개의 image를 받음
             num_input_images=self.num_pose_frames  # 2
         )
@@ -123,7 +123,7 @@ class Trainer:
             num_train_samples//self.opt.batch_size) * self.opt.num_epochs
 
         # KITTIRAWDataset의 객체
-        # 각 데이터마다 getitem으로 
+        # 각 데이터마다 getitem으로
         # color, color_aug, scale return
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
@@ -263,29 +263,28 @@ class Trainer:
     # batch 단위
 
     def essential_to_pose(self, inputs):
-        
+
         outputs = {}
         # scale: 0, frame_id: -1, 0, 1 인거 넣기
         pose_feats = {f_i: inputs["color_aug", f_i, 0]
                       for f_i in self.opt.frame_ids}
-        to_grayscale=torchvision.transforms.Grayscale(num_output_channels=1)
+        to_grayscale = torchvision.transforms.Grayscale(num_output_channels=1)
 
-        pose_feats_gray={f_i: torch.squeeze(to_grayscale(pose_feats[f_i]))
-                        for f_i in self.opt.frame_ids}
-        
+        pose_feats_gray = {f_i: torch.squeeze(to_grayscale(pose_feats[f_i]))
+                           for f_i in self.opt.frame_ids}
+
         # 여기까지가 grayscale
         # Resize등, superglue에서 사용하는 전처리 작업 필요
 
         # -1, 0 또는 0, 1 순서대로 정렬
-        for f_i in self.opt.frame_ids[1:]: #-1, 0
+        for f_i in self.opt.frame_ids[1:]:  # -1, 0
             # (B, 1, H, W) 2방씩
             if f_i < 0:  # -1
                 pose_inputs = [pose_feats_gray[f_i], pose_feats_gray[0]]
             else:  # 1
                 pose_inputs = [pose_feats_gray[0], pose_feats_gray[f_i]]
-                
-            match_points(pose_inputs)
 
+            match_points(pose_inputs)
 
     def predict_poses(self, inputs):
         """Predict poses between input frames for monocular sequences.
