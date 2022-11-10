@@ -1,6 +1,4 @@
-
-from re import T
-from mono_dataset import MonoDataset
+from .mono_dataset import MonoDataset
 import numpy as np
 import os
 import PIL.Image as pil
@@ -13,7 +11,7 @@ class KITTIDataset(MonoDataset):
     """
 
     def __init__(self, *args, **kwargs):
-        super(KITTIDataset, self).__init__()
+        super(KITTIDataset, self).__init__(*args, **kwargs)
         """Normalized intrinsic: 
         First row scaled 1/image_width
         Second row scaled 1/image_height
@@ -35,8 +33,8 @@ class KITTIDataset(MonoDataset):
         scene_name = line[0]
         frame_index = int(line[1])
 
-        velo_filename = os.path.join(self.data_path,  # 날짜까지
-                                     scene_name,  # 2011_09_26_drive_0001_sync
+        velo_filename = os.path.join(self.data_path,
+                                     scene_name,
                                      'velodyne_points/data/{:010d}.bin'.format(int(frame_index)))
         return os.path.isfile(velo_filename)
 
@@ -44,9 +42,11 @@ class KITTIDataset(MonoDataset):
     def get_color(self, folder, frame_index, side, do_flip):
         color = self.loader(self.get_image_path(
             folder, frame_index, side, do_flip))
+
         if do_flip:
-            color = color.transpose(pil.FLIP_LEFT_RIGHT)
+            color = color.transpse(pil.FLIP_LEFT_RIGHT)
         return color
+
 
 class KITTIRAWDataset(KITTIDataset):
     """KITTI dataset which loads the original velodyne depth maps for ground truth
@@ -56,7 +56,6 @@ class KITTIRAWDataset(KITTIDataset):
         super(KITTIRAWDataset, self).__init__(*args, **kwargs)
 
     def get_image_path(self, folder, frame_index, side):
-        # 파일 이름 ex)0000000001.png
         f_str = "{:010d}{}".format(frame_index, self.img_ext)
         image_path = os.path.join(
             self.data_path, folder, "image_0{}/data".format(self.side_map[side]), f_str)
@@ -65,6 +64,7 @@ class KITTIRAWDataset(KITTIDataset):
 
     def get_depth(self, folder, frame_index, side, do_flip):
         calib_path = os.path.join(self.data_path, folder.split("/")[0])
+
         velo_filename = os.path.join(
             self.data_path, folder, "velodyne_points/data/{:010d}.bin".format(int(frame_index)))
         # Velodyne to depth map
