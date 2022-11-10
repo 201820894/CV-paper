@@ -94,7 +94,7 @@ class Trainer:
             self.model_optimizer, self.opt.scheduler_step_size, 0.1
         )
 
-        if self.opt.load_weight_folder is not None:
+        if self.opt.load_weights_folder is not None:
             # ===================================================================== 마지막 다시보기
             self.load_model()
 
@@ -164,7 +164,7 @@ class Trainer:
             )
             self.backproject_depth[scale].to(self.device)
 
-            self.project_3d = Project3D(self.opt.batch_size, h, w)
+            self.project_3d[scale] = Project3D(self.opt.batch_size, h, w)
             self.project_3d[scale].to(self.device)
 
         self.depth_metric_names = [
