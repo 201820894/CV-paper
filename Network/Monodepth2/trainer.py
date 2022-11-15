@@ -116,7 +116,7 @@ class Trainer:
 
         train_filenames = readlines(fpath.format("train"))
         val_filename = readlines(fpath.format("val"))
-        img_ext = '.png'if self.opt.png else '.jpg'
+        img_ext = '.png' #if self.opt.png else '.jpg'
         # 해당 파일 열어서 example 수 세기
         num_train_samples = len(train_filenames)
         self.num_total_steps = (
