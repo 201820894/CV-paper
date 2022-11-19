@@ -1,11 +1,20 @@
-from pickle import TRUE
+# Copyright Niantic 2019. Patent Pending. All rights reserved.
+#
+# This software is licensed under the terms of the Monodepth2 licence
+# which allows for non-commercial use only, the full terms of which are made
+# available in the LICENSE file.
+
+from __future__ import absolute_import, division, print_function
+
 import numpy as np
+import time
+
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import time
 from tensorboardX import SummaryWriter
+
 import json
 
 from utils import *
@@ -14,7 +23,7 @@ from layers import *
 
 import datasets
 import networks
-import torchvision
+from IPython import embed
 
 
 class Trainer:
@@ -22,146 +31,136 @@ class Trainer:
         self.opt = options
         self.log_path = os.path.join(self.opt.log_dir, self.opt.model_name)
 
-        assert self.opt.height % 32 == 0, "height must be a multiple of 32"
-        assert self.opt.width % 32 == 0, "width mus be a multiple of 32"
+        # checking height and width are multiples of 32
+        assert self.opt.height % 32 == 0, "'height' must be a multiple of 32"
+        assert self.opt.width % 32 == 0, "'width' must be a multiple of 32"
 
         self.models = {}
         self.parameters_to_train = []
-        # no_cuda가 true 일 때만 cpu이므로 설정 안해주면 자동으로 gpu로 들어감
+
         self.device = torch.device("cpu" if self.opt.no_cuda else "cuda")
 
-        # [0, 1, 2, 3]
-        # 1/(2**0), 1/(2**1), 1/(2**2) 1/(2**3) 까지의 scale을 가지도록 정의
-        # self.num_scales = 4
         self.num_scales = len(self.opt.scales)
-
-        # [0, -1, 1]
-        # 각각 [t, t-1, t+1] 번째 frame
-        # self.num_input_frames=3
         self.num_input_frames = len(self.opt.frame_ids)
+        self.num_pose_frames = 2 if self.opt.pose_model_input == "pairs" else self.num_input_frames
+
         assert self.opt.frame_ids[0] == 0, "frame_ids must start with 0"
 
-        # pose network에 들어갈 input의 개수
-        # (t-1, t), (t, t+1) 처럼 2개의 frame으로 이루어진 쌍을 사용하므로 2로 정의
-        # if self.opt.pose_model_input == "pairs" else self.num_input_frames
-        self.num_pose_frames = 2
+        self.use_pose_net = not (
+            self.opt.use_stereo and self.opt.frame_ids == [0])
 
-        # 스테레오 카메라가 아니므로
-        self.use_pose_net = True
+        if self.opt.use_stereo:
+            self.opt.frame_ids.append("s")
 
-        # Depth encoder
         self.models["encoder"] = networks.ResnetEncoder(
-            self.opt.num_layers, self.opt.weights_init == "pretrained"
-        )
+            self.opt.num_layers, self.opt.weights_init == "pretrained")
         self.models["encoder"].to(self.device)
         self.parameters_to_train += list(self.models["encoder"].parameters())
 
-        # Depth decoder
         self.models["depth"] = networks.DepthDecoder(
-            self.models["encoder"].num_ch_enc, self.opt.scales
-        )
+            self.models["encoder"].num_ch_enc, self.opt.scales)
         self.models["depth"].to(self.device)
         self.parameters_to_train += list(self.models["depth"].parameters())
 
-        # Pose encoder
-        self.models["pose_encoder"] = networks.ResnetEncoder(
-            self.opt.num_layers, self.opt.weights_init == "pretrained",
-            # num_input_images=self.num_pose_frames: 2개의 image를 받음
-            num_input_images=self.num_pose_frames  # 2
-        )
-        self.models["pose_encoder"].to(self.device)
-        self.parameters_to_train += list(
-            self.models["pose_encoder"].parameters())
+        if self.use_pose_net:
+            if self.opt.pose_model_type == "separate_resnet":
+                self.models["pose_encoder"] = networks.ResnetEncoder(
+                    self.opt.num_layers,
+                    self.opt.weights_init == "pretrained",
+                    num_input_images=self.num_pose_frames)
 
-        # Pose decoder
-        self.models["pose"] = networks.PoseDecoder(
-            self.models["pose_encoder"].num_ch_enc, num_input_features=1,
-            num_frames_to_predict_for=2
-        )
-        self.models["pose"].to(self.device)
-        self.parameters_to_train += list(self.models["pose"].parameters())
+                self.models["pose_encoder"].to(self.device)
+                self.parameters_to_train += list(
+                    self.models["pose_encoder"].parameters())
 
-        """ 여기서 궁금한거: 
-        Pose decoder에서 num_input_features 와 num_frames_to_predict_for 의 정확한 의미
-        num_frames_to_predict_for 은 예측할 프레임의 수: 2개?: 2개 이미지 넣어서 1개 예측하는거 아니었나?
-        -> axisangle이랑 translation 2개씩 return
-        num_input_features은 그냥 디코더에 들어가는 input 수
-        """
+                self.models["pose"] = networks.PoseDecoder(
+                    self.models["pose_encoder"].num_ch_enc,
+                    num_input_features=1,
+                    num_frames_to_predict_for=2)
+
+            elif self.opt.pose_model_type == "shared":
+                self.models["pose"] = networks.PoseDecoder(
+                    self.models["encoder"].num_ch_enc, self.num_pose_frames)
+
+            elif self.opt.pose_model_type == "posecnn":
+                self.models["pose"] = networks.PoseCNN(
+                    self.num_input_frames if self.opt.pose_model_input == "all" else 2)
+
+            self.models["pose"].to(self.device)
+            self.parameters_to_train += list(self.models["pose"].parameters())
+
+        if self.opt.predictive_mask:
+            assert self.opt.disable_automasking, \
+                "When using predictive_mask, please disable automasking with --disable_automasking"
+
+            # Our implementation of the predictive masking baseline has the the same architecture
+            # as our depth decoder. We predict a separate mask for each source frame.
+            self.models["predictive_mask"] = networks.DepthDecoder(
+                self.models["encoder"].num_ch_enc, self.opt.scales,
+                num_output_channels=(len(self.opt.frame_ids) - 1))
+            self.models["predictive_mask"].to(self.device)
+            self.parameters_to_train += list(
+                self.models["predictive_mask"].parameters())
 
         self.model_optimizer = optim.Adam(
             self.parameters_to_train, self.opt.learning_rate)
         self.model_lr_scheduler = optim.lr_scheduler.StepLR(
-            self.model_optimizer, self.opt.scheduler_step_size, 0.1
-        )
+            self.model_optimizer, self.opt.scheduler_step_size, 0.1)
 
         if self.opt.load_weights_folder is not None:
-            # ===================================================================== 마지막 다시보기
             self.load_model()
 
-        print("Training model named:\n ", self.opt.model_name)
-        print("Models and tensorboard events files are saved to:\n ",
+        print("Training model named:\n  ", self.opt.model_name)
+        print("Models and tensorboard events files are saved to:\n  ",
               self.opt.log_dir)
-        print("Training is using:\n ", self.device)
+        print("Training is using:\n  ", self.device)
 
+        # data
         datasets_dict = {"kitti": datasets.KITTIRAWDataset,
-                         "kitti_odom": datasets.KITTIOdomDataset, }
-
-        # self.dataset = datasets.KITTIRAWDataset
+                         "kitti_odom": datasets.KITTIOdomDataset}
         self.dataset = datasets_dict[self.opt.dataset]
 
-        # os.path.dirname(__file__)은 해당 파일(trainer.py) 의 디렉토리 반환
-        # 이런식으로 쓰는거 생각 익히기
         fpath = os.path.join(os.path.dirname(__file__),
                              "splits", self.opt.split, "{}_files.txt")
 
         train_filenames = readlines(fpath.format("train"))
-        val_filename = readlines(fpath.format("val"))
-        img_ext = '.png' #if self.opt.png else '.jpg'
-        # 해당 파일 열어서 example 수 세기
-        num_train_samples = len(train_filenames)
-        self.num_total_steps = (
-            num_train_samples//self.opt.batch_size) * self.opt.num_epochs
+        val_filenames = readlines(fpath.format("val"))
+        img_ext = '.png' if self.opt.png else '.jpg'
 
-        # KITTIRAWDataset의 객체
-        # 각 데이터마다 getitem으로
-        # color, color_aug, scale return
+        num_train_samples = len(train_filenames)
+        self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
+
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext
-        )
+            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True
-        )
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         val_dataset = self.dataset(
-            self.opt.data_path, val_filename, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext
-        )
+            self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
+            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True
-        )
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         self.val_iter = iter(self.val_loader)
 
         self.writers = {}
-        # Tensorboard
-        for mode in ["triain", "val"]:
+        for mode in ["train", "val"]:
             self.writers[mode] = SummaryWriter(
                 os.path.join(self.log_path, mode))
 
-        self.ssim = SSIM()
-        self.ssim.to(self.device)
+        if not self.opt.no_ssim:
+            self.ssim = SSIM()
+            self.ssim.to(self.device)
 
         self.backproject_depth = {}
         self.project_3d = {}
-        #scales: [0, 1, 2, 3]
         for scale in self.opt.scales:
-            h = self.opt.height//(2**scale)
-            w = self.opt.width//(2**scale)
+            h = self.opt.height // (2 ** scale)
+            w = self.opt.width // (2 ** scale)
 
             self.backproject_depth[scale] = BackprojectDepth(
-                self.opt.batch_size, h, w
-            )
+                self.opt.batch_size, h, w)
             self.backproject_depth[scale].to(self.device)
 
             self.project_3d[scale] = Project3D(self.opt.batch_size, h, w)
@@ -189,23 +188,26 @@ class Trainer:
             m.eval()
 
     def train(self):
+        """Run the entire training pipeline
+        """
         self.epoch = 0
         self.step = 0
         self.start_time = time.time()
         for self.epoch in range(self.opt.num_epochs):
             self.run_epoch()
-            if (self.epoch+1) % self.opt.save_frequency == 0:
+            if (self.epoch + 1) % self.opt.save_frequency == 0:
                 self.save_model()
 
     def run_epoch(self):
-        self.model_lr_scheduler.step()
+        """Run a single epoch of training and validation
+        """
+        #self.model_lr_scheduler.step()
 
         print("Training")
         self.set_train()
 
-        # loader에서 가져오는거면 (B, C, H, W)
-        # 각 input에 key value 있고 얘들이 batch
         for batch_idx, inputs in enumerate(self.train_loader):
+
             before_op_time = time.time()
 
             outputs, losses = self.process_batch(inputs)
@@ -214,13 +216,12 @@ class Trainer:
             losses["loss"].backward()
             self.model_optimizer.step()
 
-            duration = time.time()-before_op_time
+            duration = time.time() - before_op_time
 
             # log less frequently after the first 2000 steps to save time & disk space
             early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 2000
             late_phase = self.step % 2000 == 0
 
-            # 일정 시간마다 gt와 비교
             if early_phase or late_phase:
                 self.log_time(batch_idx, duration, losses["loss"].cpu().data)
 
@@ -231,131 +232,117 @@ class Trainer:
                 self.val()
 
             self.step += 1
+        self.model_lr_scheduler.step()
 
-    # 얘가 받는 input은 batch
     def process_batch(self, inputs):
         """Pass a minibatch through the network and generate images and losses
         """
-        # inputs 구성이 tuple (feature, value) 형식
         for key, ipt in inputs.items():
             inputs[key] = ipt.to(self.device)
-        # inputs 중에서 frame_id=0, scale=0인 이미지만 Depth Encoder에 입력으로 넣는다.
-        # ("color_aug", <frame_id>, <scale>)
-        # frame id: -1, 0, 1/ scale은 0가 원상태
-        features = self.models["encoder"](inputs["color_aug", 0, 0])
-        # depth map
-        # 여기서 처음 만들어지고 추가되는거
-        # self.outputs[("disp", i)]=self.sigmoid(self.convs[("dispconv", i)](x))
-        # i는 scale
-        outputs = self.models["depth"](features)
 
-        # pose 예측 결과를 outputs (dict)에 추가함
-        # outputs += ("axisangle", 0, f_i), ("translation", 0, f_i), ("cam_T_cam", 0, f_i)
-        # 한 batch에 대한 input 전체 넘겨주는거
-        outputs.update(self.predict_poses(inputs))
+        if self.opt.pose_model_type == "shared":
+            # If we are using a shared encoder for both depth and pose (as advocated
+            # in monodepthv1), then all images are fed separately through the depth encoder.
+            all_color_aug = torch.cat(
+                [inputs[("color_aug", i, 0)] for i in self.opt.frame_ids])
+            all_features = self.models["encoder"](all_color_aug)
+            all_features = [torch.split(f, self.opt.batch_size)
+                            for f in all_features]
+
+            features = {}
+            for i, k in enumerate(self.opt.frame_ids):
+                features[k] = [f[i] for f in all_features]
+
+            outputs = self.models["depth"](features[0])
+        else:
+            # Otherwise, we only feed the image with frame_id 0 through the depth encoder
+            features = self.models["encoder"](inputs[("color_aug", 0, 0)])
+            outputs = self.models["depth"](features)
+
+        if self.opt.predictive_mask:
+            outputs["predictive_mask"] = self.models["predictive_mask"](
+                features)
+
+        if self.use_pose_net:
+            outputs.update(self.predict_poses(inputs, features))
 
         self.generate_images_pred(inputs, outputs)
         losses = self.compute_losses(inputs, outputs)
 
         return outputs, losses
 
-    # 얘를 바꿔야함
-    # batch 단위
-
-    def essential_to_pose(self, inputs):
-
-        outputs = {}
-        # scale: 0, frame_id: -1, 0, 1 인거 넣기
-        pose_feats = {f_i: inputs["color_aug", f_i, 0]
-                      for f_i in self.opt.frame_ids}
-        to_grayscale = torchvision.transforms.Grayscale(num_output_channels=1)
-
-        pose_feats_gray = {f_i: torch.squeeze(to_grayscale(pose_feats[f_i]))
-                           for f_i in self.opt.frame_ids}
-
-        # 여기까지가 grayscale
-        # Resize등, superglue에서 사용하는 전처리 작업 필요
-
-        # -1, 0 또는 0, 1 순서대로 정렬
-        for f_i in self.opt.frame_ids[1:]:  # -1, 0
-            # (B, 1, H, W) 2방씩
-            if f_i < 0:  # -1
-                pose_inputs = [pose_feats_gray[f_i], pose_feats_gray[0]]
-            else:  # 1
-                pose_inputs = [pose_feats_gray[0], pose_feats_gray[f_i]]
-
-            match_points(pose_inputs)
-
-    def predict_poses(self, inputs):
+    def predict_poses(self, inputs, features):
         """Predict poses between input frames for monocular sequences.
         """
         outputs = {}
-        # scale: 0, frame_id: -1, 0, 1 인거 넣기
-        pose_feats = {f_i: inputs["color_aug", f_i, 0]
-                      for f_i in self.opt.frame_ids}
-        """
-        pose feats={0: inputs["color_aug", 0, 0],
-                    -1: inputs["color_aug", -1, 0],
-                    1: inputs["color_aug", 1, 0],
-                    }
-                    : Single training item 에 관한거: mono_dataset.py
-        """
+        if self.num_pose_frames == 2:
+            # In this setting, we compute the pose to each source frame via a
+            # separate forward pass through the pose network.
 
-        # -1, 0 또는 0, 1 순서대로 정렬
-        for f_i in self.opt.frame_ids[1:]:
-            if f_i < 0:  # -1
-                pose_inputs = [pose_feats[f_i], pose_feats[0]]
-            else:  # 1
-                pose_inputs = [pose_feats[0], pose_feats[f_i]]
-        # Input (B, 3, H, W)
-        # (B, 6, H, W)를 넘겨줌
-        pose_inputs = self.models["pose_encoder"](torch.cat(pose_inputs, 1))
+            # select what features the pose network takes as input
+            if self.opt.pose_model_type == "shared":
+                pose_feats = {f_i: features[f_i] for f_i in self.opt.frame_ids}
+            else:
+                pose_feats = {f_i: inputs["color_aug", f_i, 0]
+                              for f_i in self.opt.frame_ids}
 
-        # num_input_features= 1
-        # num_frames_to_predict_for= 2
-        # axisangle : (B, 2, 1, 3)
-        # translation : (B, 2, 1, 3)
-        axisangle, translation = self.models["pose"](pose_inputs)
+            for f_i in self.opt.frame_ids[1:]:
+                if f_i != "s":
+                    # To maintain ordering we always pass frames in temporal order
+                    if f_i < 0:
+                        pose_inputs = [pose_feats[f_i], pose_feats[0]]
+                    else:
+                        pose_inputs = [pose_feats[0], pose_feats[f_i]]
 
-        # 0 -> f_i(-1 또는 +1)로의 변화된 카메라 pose의 axisangle, translation을 예측함
-        # 여기 하나에 (B, ...) 형식으로 batch 통째로 들어가는거
-        # (B, num_frames_to_predict_for, 1, 3)
-        """
-        10.18 업데이트, 결국 concat해서 넣었기 때문에 
-        이 axisangle이랑 translation이 s->t 인지 t->s 인지는 이후 
-        pipeline에 따라 달라짐(s->t라고 장담못함)
-        둘다 2개의 axisangle, translation 중 첫번째를 넣음
-        
-        target->source(t->t')
-        """
-        outputs[("axisangle", 0, f_i)] = axisangle
-        outputs[("translation", 0, f_i)] = translation
+                    if self.opt.pose_model_type == "separate_resnet":
+                        pose_inputs = [self.models["pose_encoder"](
+                            torch.cat(pose_inputs, 1))]
+                    elif self.opt.pose_model_type == "posecnn":
+                        pose_inputs = torch.cat(pose_inputs, 1)
 
-        """
-        invert는 
-        [-1, 0]이 들어갔을 때 True
-        [0, 1]이 들어갔을 때 False
+                    axisangle, translation = self.models["pose"](pose_inputs)
+                    outputs[("axisangle", 0, f_i)] = axisangle
+                    outputs[("translation", 0, f_i)] = translation
 
-        """
-        outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
-            axisangle[:, 0], translation[:, 0], invert=(f_i < 0))
+                    # Invert the matrix if the frame id is negative
+                    outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
+                        axisangle[:, 0], translation[:, 0], invert=(f_i < 0))
 
-        # outputs[("cam_T_cam", 0, f_i)]이 target->source 의 transformation matrix
-        # source가 t'(t' frame)이고 target이 t(t frame)
-        # transformation matrix는 target->source  T_t->t'
-        # 얘로 target(t)을 source(t')관점에서 본 이미지 좌표를 끌어낸 후
-        # grid sampling 을 통해 source 관점에서 본 이미지를 target 관점으로 reprojection(I_t'->t)
+        else:
+            # Here we input all frames to the pose net (and predict all poses) together
+            if self.opt.pose_model_type in ["separate_resnet", "posecnn"]:
+                pose_inputs = torch.cat(
+                    [inputs[("color_aug", i, 0)] for i in self.opt.frame_ids if i != "s"], 1)
+
+                if self.opt.pose_model_type == "separate_resnet":
+                    pose_inputs = [self.models["pose_encoder"](pose_inputs)]
+
+            elif self.opt.pose_model_type == "shared":
+                pose_inputs = [features[i]
+                               for i in self.opt.frame_ids if i != "s"]
+
+            axisangle, translation = self.models["pose"](pose_inputs)
+
+            for i, f_i in enumerate(self.opt.frame_ids[1:]):
+                if f_i != "s":
+                    outputs[("axisangle", 0, f_i)] = axisangle
+                    outputs[("translation", 0, f_i)] = translation
+                    outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
+                        axisangle[:, i], translation[:, i])
+
         return outputs
 
     def val(self):
+        """Validate the model on a single minibatch
+        """
         self.set_eval()
-        # 앞에서 정의해준건데?
-        # Iteration이 멈추면?
         try:
-            inputs = self.val_iter.next()
+            #inputs = self.val_iter.next()
+            inputs = next(self.val_iter)
         except StopIteration:
             self.val_iter = iter(self.val_loader)
-            inputs = self.val_iter.next
+            #inputs = self.val_iter.next()
+            inputs = next(self.val_iter)
 
         with torch.no_grad():
             outputs, losses = self.process_batch(inputs)
@@ -368,178 +355,162 @@ class Trainer:
 
         self.set_train()
 
-    def generate_image_pred(self, inputs, outputs):
-        # Generate reprojected color image
+    def generate_images_pred(self, inputs, outputs):
+        """Generate the warped (reprojected) color images for a minibatch.
+        Generated images are saved into the `outputs` dictionary.
+        """
         for scale in self.opt.scales:
             disp = outputs[("disp", scale)]
-            # 192,640(입력 해상도) 로 변경
-            disp = F.interpolate(
-                disp, [self.opt.height, self.opt.width], mode="bilinear", align_corners=False
-            )
-            source_scale = 0
+            if self.opt.v1_multiscale:
+                source_scale = scale
+            else:
+                disp = F.interpolate(
+                    disp, [self.opt.height, self.opt.width], mode="bilinear", align_corners=False)
+                source_scale = 0
 
-            # Depth decoder가 예측하는건 disparity
-            # -> single image 넣었는데 왜 depth 바로 안끌어내고 disp로 한다음에 변환?
             _, depth = disp_to_depth(
-                disp, self.opt.min_depth, self.opt.max_depth
-            )
+                disp, self.opt.min_depth, self.opt.max_depth)
 
             outputs[("depth", 0, scale)] = depth
-            #-1, 1
+
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
 
-                # 여기서 0은 scale
-                T = outputs[("cam_T_cam", 0, frame_id)]
+                if frame_id == "s":
+                    T = inputs["stereo_T"]
+                else:
+                    T = outputs[("cam_T_cam", 0, frame_id)]
 
-                # 2D depth map -> 3D point
-                # (B, 4, hw) : X, Y, Z, 1
+                # from the authors of https://arxiv.org/abs/1712.00175
+                if self.opt.pose_model_type == "posecnn":
 
-                # I_{t}의 깊이 정보인 D_t (depth)를 3D 좌표로 backprojection
+                    axisangle = outputs[("axisangle", 0, frame_id)]
+                    translation = outputs[("translation", 0, frame_id)]
+
+                    inv_depth = 1 / depth
+                    mean_inv_depth = inv_depth.mean(3, True).mean(2, True)
+
+                    T = transformation_from_parameters(
+                        axisangle[:, 0], translation[:, 0] * mean_inv_depth[:, 0], frame_id < 0)
 
                 cam_points = self.backproject_depth[source_scale](
-                    depth, inputs[("inv_K", source_scale)]
-                )
-
+                    depth, inputs[("inv_K", source_scale)])
                 pix_coords = self.project_3d[source_scale](
-                    cam_points, inputs[("K", source_scale)], T
-                )
+                    cam_points, inputs[("K", source_scale)], T)
 
-                # World coordinate와 camera coordinate를 같게 보면 가능
-                # 애초에 Cam point 라고 변수를 놓은거부터가 두개를 구분하지 않겠다는 뜻으로 생각
-                # scale 된 해상도임
                 outputs[("sample", frame_id, scale)] = pix_coords
 
-                # inputs[("color", frame_id, source_scale)] : I_{t'}의 원본 해상도 이미지
-                # outputs[("sample", frame_id, scale)] : uv 좌표 (t')
-
-                # outputs[("color", frame_id, scale)] : I_{t' -> t}
-                # => sample 좌표 (uv 좌표)를 이용하여 I_{t'}를 I_{t}에 맞게 sampling 하여 생성 (I_{t'->t})하고
-                #    최종적으로 I_{t'->t}와 I_{t}의 reprojection loss가 낮아지도록 학습하므로
-                #    학습 완료 시 I_{t' -> t}와 I_{t}는 유사해짐
-                #    F.grid_sample 연산에 따라 기존 이미지 크기를 벗어난 sample 좌표들은 가장 외곽의 값으로 대체됨
-
-                #(B, 3, H, W)
                 outputs[("color", frame_id, scale)] = F.grid_sample(
-                    # (B, 3, H, W)
                     inputs[("color", frame_id, source_scale)],
-                    # (B, H, W, 2)
-                    outputs[("sample", frame_id, source_scale)],
-                    padding_mode="border"
-                )
+                    outputs[("sample", frame_id, scale)],
+                    padding_mode="border", align_corners=True)
 
                 if not self.opt.disable_automasking:
-                    outputs[("color_identity", frame_id, scale)] =\
+                    outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
 
     def compute_reprojection_loss(self, pred, target):
-        # pred.shape : (B, 3, source_height, source_width)
-        # target.shape : (B, 3, source_height, source_width)
-        # (B, 3, source_height, source_width)
-        abs_diff = torch.abs(target-pred)
-        # L1
-        # (B, 1, source_height, source_width)
-        l1_loss = abs_diff.mean(1, keepdims=True)
+        """Computes reprojection loss between a batch of predicted and target images
+        """
+        abs_diff = torch.abs(target - pred)
+        l1_loss = abs_diff.mean(1, True)
 
-        ssim_loss = self.ssim(pred, target).mean(1, True)
-        reprojection_loss = 0.85*ssim_loss+0.15*l1_loss
-        # (B, 1, source_height, source_width)
+        if self.opt.no_ssim:
+            reprojection_loss = l1_loss
+        else:
+            ssim_loss = self.ssim(pred, target).mean(1, True)
+            reprojection_loss = 0.85 * ssim_loss + 0.15 * l1_loss
+
         return reprojection_loss
 
-    # Batch 단위로 넣어주는거
     def compute_losses(self, inputs, outputs):
+        """Compute the reprojection and smoothness losses for a minibatch
+        """
         losses = {}
         total_loss = 0
 
-        # scale 별 loss 구하기
         for scale in self.opt.scales:
             loss = 0
+            reprojection_losses = []
 
-            source_scale = 0
+            if self.opt.v1_multiscale:
+                source_scale = scale
+            else:
+                source_scale = 0
 
-            # (B, C=1, H//(2**scale), W//(2**scale))
             disp = outputs[("disp", scale)]
-            # (B, C=3, H//(2**scale), W//(2**scale)): Downscaled image
             color = inputs[("color", 0, scale)]
-            # (B, C=3, 640, 192): Original size image
             target = inputs[("color", 0, source_scale)]
 
-            reprojection_losses = []
             for frame_id in self.opt.frame_ids[1:]:
-                # outputs[("color", frame_id, scale)]의 크기는 source_scale을 가지나
-                # scale 만큼 downsampling된 이미지로 부터 생성된 것을 의미함
-                # Output은 reprojected image
-                # (B, 3, H, W)
                 pred = outputs[("color", frame_id, scale)]
-            # pred.shape : (B, 3, source_height, source_width)
-            # target.shape : (B, 3, source_height, source_width)
                 reprojection_losses.append(
-                    # pixel wise-> mean(dim=1) (B, 1, h, w)
-                    self.compute_reprojection_loss(pred, target)
-                )
-            # (B, 2, h, w)
-            reprojection_loss = torch.cat(reprojection_losses, 1)
+                    self.compute_reprojection_loss(pred, target))
 
-            identity_reprojection_losses = []
-            for frame_id in self.opt.frame_ids[1:]:
-                pred = inputs[("color", frame_id, source_scale)]
-                # I_{t'} (pred) 와 I_{t} (target) 간의 reprojection loss를 구하며 이를 identity_reprojection_loss 라고 함
-                # auto masking을 적용하기 위하여 사용함
-                # 얘는 input끼리 loss 구하는거
-                identity_reprojection_losses.append(
-                    self.compute_reprojection_loss(pred, target)
-                )
-            identity_reprojection_loss = torch.cat(
-                identity_reprojection_losses, 1)
+            reprojection_losses = torch.cat(reprojection_losses, 1)
 
-            # (B, 2, h, w)
-            # For tie breaking:
-            identity_reprojection_loss += torch.randn(
-                identity_reprojection_loss.shape, device=self.device
-            )*0.00001
+            if not self.opt.disable_automasking:
+                identity_reprojection_losses = []
+                for frame_id in self.opt.frame_ids[1:]:
+                    pred = inputs[("color", frame_id, source_scale)]
+                    identity_reprojection_losses.append(
+                        self.compute_reprojection_loss(pred, target))
 
-            # (B, 4, h, w)
-            combined = torch.cat(
-                (identity_reprojection_loss, reprojection_loss), dim=1
-            )
-##
-            # identity_reprojection_loss와 reprojection_loss 중 가장 작은 값을 선택합니다.
-            # 만약 identity_reprojection_loss 중에서 가장 작은 부분이 선택된다면
-            # 두 Frame 간 static 한 픽셀에 의해 loss가 가장 작아서 선택 된 것으로 가정하며
-            # static한 픽셀은 차이가 거의 없어 Loss가 0에 가까워지므로 auto-masking이 됩니다.
-            # reprojection_loss 중에서 가장 작은 값이 선택된다면 두 Frame 간 차이가 있는 것으로 가정하며,
-            # occluded pixel 문제 또한 처리된 것으로 판단합니다.
+                identity_reprojection_losses = torch.cat(
+                    identity_reprojection_losses, 1)
 
-            # (B, h, w)
-            # (B, h, w)
-            # 여기서는 4개를 비교함
-            # (-1과 0의 reprojection error, 0과 1의 reprojection error): identity_reprojection_loss
-            # (-1 -> 0, 0의 reprojection error,  1 -> 0과  0의 reprojection error): reprojection_loss
-            # 0은 다들어감 input 안변함
-            # idxs는 몇 번째 픽셀(Index)인지(0~3)
-            to_optimize, idxs = torch.min(combined, dim=1)
+                if self.opt.avg_reprojection:
+                    identity_reprojection_loss = identity_reprojection_losses.mean(
+                        1, keepdim=True)
+                else:
+                    # save both images, and do min all at once below
+                    identity_reprojection_loss = identity_reprojection_losses
 
-            # (B, h, w)
-            # minimum의 index가 identity shape보다 크면 reprojection loss 가 선택된거
-            # Reprojection이 minimum일 때 1: 즉 잘 선택되고 마스크 없으면 1
-            outputs["identity_selection/{}".format(scale)] = (
-                idxs > identity_reprojection_loss.shape[1] - 1).float()
+            elif self.opt.predictive_mask:
+                # use the predicted mask
+                mask = outputs["predictive_mask"]["disp", scale]
+                if not self.opt.v1_multiscale:
+                    mask = F.interpolate(
+                        mask, [self.opt.height, self.opt.width],
+                        mode="bilinear", align_corners=False)
 
-            # SSIM + l1
-            loss += to_optimize.mean()
+                reprojection_losses *= mask
 
-            # norm_disp : d^{*}_t 에 해당하며 norm_disp와 color 이미지를 통하여 smoothness loss를 구합니다.
+                # add a loss pushing mask to 1 (using nn.BCELoss for stability)
+                weighting_loss = 0.2 * nn.BCELoss()(mask, torch.ones(mask.shape).cuda())
+                loss += weighting_loss.mean()
 
-            # disp: (B, C=1, H//(2**scale), W//(2**scale))
-            # mean_disp: (B, 1, 1, 1)
+            if self.opt.avg_reprojection:
+                reprojection_loss = reprojection_losses.mean(1, keepdim=True)
+            else:
+                reprojection_loss = reprojection_losses
+
+            if not self.opt.disable_automasking:
+                # add random numbers to break ties
+                identity_reprojection_loss += torch.randn(
+                    identity_reprojection_loss.shape, device=self.device) * 0.00001
+
+                combined = torch.cat(
+                    (identity_reprojection_loss, reprojection_loss), dim=1)
+            else:
+                combined = reprojection_loss
+
+            if combined.shape[1] == 1:
+                to_optimise = combined
+            else:
+                to_optimise, idxs = torch.min(combined, dim=1)
+
+            if not self.opt.disable_automasking:
+                outputs["identity_selection/{}".format(scale)] = (
+                    idxs > identity_reprojection_loss.shape[1] - 1).float()
+
+            loss += to_optimise.mean()
+
             mean_disp = disp.mean(2, True).mean(3, True)
-            # normalize
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
             loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
-            # Scale 별로 돌면서 더하기
             total_loss += loss
-            # Scale 별 loss update
             losses["loss/{}".format(scale)] = loss
 
         total_loss /= self.num_scales
@@ -554,18 +525,16 @@ class Trainer:
         """
         depth_pred = outputs[("depth", 0, 0)]
         depth_pred = torch.clamp(F.interpolate(
-            depth_pred, [375, 1242], mode="bilinear", align_corners=False), 1e-3, 80
-        )
+            depth_pred, [375, 1242], mode="bilinear", align_corners=False), 1e-3, 80)
         depth_pred = depth_pred.detach()
 
         depth_gt = inputs["depth_gt"]
-        # Depth mask
         mask = depth_gt > 0
 
-        crop_mask = torch.zeors_like(mask)
-        # Size mask
-        crop_mask[:, :, 153:371, 44:1179] = 1
-        mask = mask*crop_mask
+        # garg/eigen crop
+        crop_mask = torch.zeros_like(mask)
+        crop_mask[:, :, 153:371, 44:1197] = 1
+        mask = mask * crop_mask
 
         depth_gt = depth_gt[mask]
         depth_pred = depth_pred[mask]
@@ -579,14 +548,12 @@ class Trainer:
             losses[metric] = np.array(depth_errors[i].cpu())
 
     def log_time(self, batch_idx, duration, loss):
-
-        samples_per_sec = self.opt.batch_size/duration
-        # 이때까지 걸린 시간
-        time_sofar = time.time()-self.start_time
-        # 남은 시간
-        # (전체 step/현재 step) * 현재 time
-        training_time_left = (self.num_total_steps /
-                              self.step-1.0)*time_sofar if self.step > 0 else 0
+        """Print a logging statement to the terminal
+        """
+        samples_per_sec = self.opt.batch_size / duration
+        time_sofar = time.time() - self.start_time
+        training_time_left = (
+            self.num_total_steps / self.step - 1.0) * time_sofar if self.step > 0 else 0
         print_string = "epoch {:>3} | batch {:>6} | examples/s: {:5.1f}" + \
             " | loss: {:.5f} | time elapsed: {} | time left: {}"
         print(print_string.format(self.epoch, batch_idx, samples_per_sec, loss,
@@ -614,7 +581,15 @@ class Trainer:
                     "disp_{}/{}".format(s, j),
                     normalize_image(outputs[("disp", s)][j]), self.step)
 
-                if not self.opt.disable_automasking:
+                if self.opt.predictive_mask:
+                    for f_idx, frame_id in enumerate(self.opt.frame_ids[1:]):
+                        writer.add_image(
+                            "predictive_mask_{}_{}/{}".format(frame_id, s, j),
+                            outputs["predictive_mask"][(
+                                "disp", s)][j, f_idx][None, ...],
+                            self.step)
+
+                elif not self.opt.disable_automasking:
                     writer.add_image(
                         "automask_{}/{}".format(s, j),
                         outputs["identity_selection/{}".format(s)][j][None, ...], self.step)
