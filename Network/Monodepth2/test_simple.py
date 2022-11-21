@@ -21,7 +21,7 @@ from torchvision import transforms, datasets
 import networks
 from layers import disp_to_depth
 from utils import download_model_if_doesnt_exist
-#from evaluate_depth import STEREO_SCALE_FACTOR
+from evaluate_depth import STEREO_SCALE_FACTOR
 
 
 def parse_args():
@@ -141,8 +141,7 @@ def test_simple(args):
             scaled_disp, depth = disp_to_depth(disp, 0.1, 100)
             if args.pred_metric_depth:
                 name_dest_npy = os.path.join(output_directory, "{}_depth.npy".format(output_name))
-                metric_depth = 5.4 * depth.cpu().numpy()
-                # STEREO_SCALE_FACTOR
+                metric_depth = STEREO_SCALE_FACTOR * depth.cpu().numpy()
                 np.save(name_dest_npy, metric_depth)
             else:
                 name_dest_npy = os.path.join(output_directory, "{}_disp.npy".format(output_name))

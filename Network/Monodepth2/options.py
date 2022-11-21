@@ -9,12 +9,14 @@ from __future__ import absolute_import, division, print_function
 import os
 import argparse
 
-file_dir = os.path.dirname(__file__)  # the directory that options.py resides in
+# the directory that options.py resides in
+file_dir = os.path.dirname(__file__)
 
 
 class MonodepthOptions:
     def __init__(self):
-        self.parser = argparse.ArgumentParser(description="Monodepthv2 options")
+        self.parser = argparse.ArgumentParser(
+            description="Monodepthv2 options")
 
         # PATHS
         self.parser.add_argument("--data_path",
@@ -34,7 +36,8 @@ class MonodepthOptions:
         self.parser.add_argument("--split",
                                  type=str,
                                  help="which training split to use",
-                                 choices=["eigen_zhou", "eigen_full", "odom", "benchmark"],
+                                 choices=["eigen_zhou", "eigen_full",
+                                          "odom", "benchmark"],
                                  default="eigen_zhou")
         self.parser.add_argument("--num_layers",
                                  type=int,
@@ -87,7 +90,7 @@ class MonodepthOptions:
         self.parser.add_argument("--batch_size",
                                  type=int,
                                  help="batch size",
-                                 default=12)
+                                 default=8)
         self.parser.add_argument("--learning_rate",
                                  type=float,
                                  help="learning rate",
@@ -140,7 +143,7 @@ class MonodepthOptions:
         self.parser.add_argument("--num_workers",
                                  type=int,
                                  help="number of dataloader workers",
-                                 default=12)
+                                 default=4)
 
         # LOADING options
         self.parser.add_argument("--load_weights_folder",
@@ -156,7 +159,7 @@ class MonodepthOptions:
         self.parser.add_argument("--log_frequency",
                                  type=int,
                                  help="number of batches between each tensorboard log",
-                                 default=250)
+                                 default=1)
         self.parser.add_argument("--save_frequency",
                                  type=int,
                                  help="number of epochs between each save",
@@ -183,7 +186,7 @@ class MonodepthOptions:
                                  type=str,
                                  default="eigen",
                                  choices=[
-                                    "eigen", "eigen_benchmark", "benchmark", "odom_9", "odom_10"],
+                                     "eigen", "eigen_benchmark", "benchmark", "odom_9", "odom_10"],
                                  help="which split to run eval on")
         self.parser.add_argument("--save_pred_disps",
                                  help="if set saves predicted disparities",
