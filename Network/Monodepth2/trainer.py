@@ -25,6 +25,11 @@ import datasets
 import networks
 from IPython import embed
 
+from swin_transformer_v2 import SwinTransformerV2
+
+from swin_transformer_v2 import swin_transformer_v2_t, swin_transformer_v2_s, swin_transformer_v2_b, \
+    swin_transformer_v2_l, swin_transformer_v2_h, swin_transformer_v2_g
+
 
 class Trainer:
     def __init__(self, options):
@@ -52,15 +57,33 @@ class Trainer:
         if self.opt.use_stereo:
             self.opt.frame_ids.append("s")
 
-        self.models["encoder"] = networks.ResnetEncoder(
-            self.opt.num_layers, self.opt.weights_init == "pretrained")
-        self.models["encoder"].to(self.device)
-        self.parameters_to_train += list(self.models["encoder"].parameters())
+        self.models["swin_encoder"] = swin_transformer_v2_t(in_channels=3,
+                                                            window_size=(
+                                                                6, 20),
+                                                            input_resolution=(
+                                                                192, 640),
+                                                            sequential_self_attention=False,
+                                                            use_checkpoint=False)
+        self.models["swin_encoder"].to(self.device)
+        self.parameters_to_train += list(
+            self.models["swin_encoder"].parameters())
 
-        self.models["depth"] = networks.DepthDecoder(
-            self.models["encoder"].num_ch_enc, self.opt.scales)
-        self.models["depth"].to(self.device)
-        self.parameters_to_train += list(self.models["depth"].parameters())
+        self.models["swin_decoder"] = networks.Swin_DepthDecoder(
+            num_ch_enc=np.array([96, 192, 384, 768]), scales=range(4)
+        )
+        self.models["swin_decoder"].to(self.device)
+        self.parameters_to_train += list(
+            self.models["swin_decoder"].parameters())
+
+        # self.models["encoder"] = networks.ResnetEncoder(
+        #    self.opt.num_layers, self.opt.weights_init == "pretrained")
+        # self.models["encoder"].to(self.device)
+        #self.parameters_to_train += list(self.models["encoder"].parameters())
+
+        # self.models["depth"] = networks.DepthDecoder(
+        #    self.models["encoder"].num_ch_enc, self.opt.scales)
+        # self.models["depth"].to(self.device)
+        #self.parameters_to_train += list(self.models["depth"].parameters())
 
         if self.use_pose_net:
             if self.opt.pose_model_type == "separate_resnet":
@@ -95,9 +118,10 @@ class Trainer:
 
             # Our implementation of the predictive masking baseline has the the same architecture
             # as our depth decoder. We predict a separate mask for each source frame.
-            self.models["predictive_mask"] = networks.DepthDecoder(
-                self.models["encoder"].num_ch_enc, self.opt.scales,
+            self.models["predictive_mask"] = networks.Swin_DepthDecoder(
+                num_ch_enc=np.array([96, 192, 384, 768]), scales=self.opt.scales,
                 num_output_channels=(len(self.opt.frame_ids) - 1))
+
             self.models["predictive_mask"].to(self.device)
             self.parameters_to_train += list(
                 self.models["predictive_mask"].parameters())
@@ -201,7 +225,7 @@ class Trainer:
     def run_epoch(self):
         """Run a single epoch of training and validation
         """
-        #self.model_lr_scheduler.step()
+        # self.model_lr_scheduler.step()
 
         print("Training")
         self.set_train()
@@ -220,7 +244,7 @@ class Trainer:
 
             # log less frequently after the first 2000 steps to save time & disk space
             early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 2000
-            late_phase = self.step % 2000 == 0
+            late_phase = self.step % 1000 == 0
 
             if early_phase or late_phase:
                 self.log_time(batch_idx, duration, losses["loss"].cpu().data)
@@ -240,24 +264,28 @@ class Trainer:
         for key, ipt in inputs.items():
             inputs[key] = ipt.to(self.device)
 
-        if self.opt.pose_model_type == "shared":
-            # If we are using a shared encoder for both depth and pose (as advocated
-            # in monodepthv1), then all images are fed separately through the depth encoder.
-            all_color_aug = torch.cat(
-                [inputs[("color_aug", i, 0)] for i in self.opt.frame_ids])
-            all_features = self.models["encoder"](all_color_aug)
-            all_features = [torch.split(f, self.opt.batch_size)
-                            for f in all_features]
-
-            features = {}
-            for i, k in enumerate(self.opt.frame_ids):
-                features[k] = [f[i] for f in all_features]
-
-            outputs = self.models["depth"](features[0])
-        else:
+        # if self.opt.pose_model_type == "shared":
+        #    # If we are using a shared encoder for both depth and pose (as advocated
+        #    # in monodepthv1), then all images are fed separately through the depth encoder.
+        #    all_color_aug = torch.cat(
+        #        [inputs[("color_aug", i, 0)] for i in self.opt.frame_ids])
+        #    all_features = self.models["encoder"](all_color_aug)
+        #    all_features = [torch.split(f, self.opt.batch_size)
+        #                    for f in all_features]
+        #
+        #    features = {}
+        #    for i, k in enumerate(self.opt.frame_ids):
+        #        features[k] = [f[i] for f in all_features]
+        #
+        #    outputs = self.models["depth"](features[0])
+        # else:
             # Otherwise, we only feed the image with frame_id 0 through the depth encoder
-            features = self.models["encoder"](inputs[("color_aug", 0, 0)])
-            outputs = self.models["depth"](features)
+
+        #features = self.models["encoder"](inputs[("color_aug", 0, 0)])
+        #outputs = self.models["depth"](features)
+
+        features = self.models["swin_encoder"](inputs[("color_aug", 0, 0)])
+        outputs = self.models["swin_decoder"](features)
 
         if self.opt.predictive_mask:
             outputs["predictive_mask"] = self.models["predictive_mask"](
@@ -556,7 +584,7 @@ class Trainer:
             self.num_total_steps / self.step - 1.0) * time_sofar if self.step > 0 else 0
         print_string = "epoch {:>3} | batch {:>6} | examples/s: {:5.1f}" + \
             " | loss: {:.5f} | time elapsed: {} | time left: {}"
-        print(print_string.format(self.epoch, batch_idx, samples_per_sec, loss,
+        print(print_string.format(self.epoch + self.opt.start_from, batch_idx, samples_per_sec, loss,
                                   sec_to_hm_str(time_sofar), sec_to_hm_str(training_time_left)))
 
     def log(self, mode, inputs, outputs, losses):
@@ -609,14 +637,14 @@ class Trainer:
         """Save model weights to disk
         """
         save_folder = os.path.join(
-            self.log_path, "models", "weights_{}".format(self.epoch))
+            self.log_path, "models", "weights_{}".format(self.epoch+self.opt.start_from))
         if not os.path.exists(save_folder):
             os.makedirs(save_folder)
 
         for model_name, model in self.models.items():
             save_path = os.path.join(save_folder, "{}.pth".format(model_name))
             to_save = model.state_dict()
-            if model_name == 'encoder':
+            if model_name == 'swin_encoder':
                 # save the sizes - these are needed at prediction time
                 to_save['height'] = self.opt.height
                 to_save['width'] = self.opt.width

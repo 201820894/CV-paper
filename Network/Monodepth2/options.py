@@ -26,9 +26,16 @@ class MonodepthOptions:
         self.parser.add_argument("--log_dir",
                                  type=str,
                                  help="log directory",
-                                 default=os.path.join(os.path.expanduser("~"), "tmp"))
+                                 #default=os.path.join(os.path.expanduser("~"), "tmp")
+                                 default="tmp")
 
         # TRAINING options
+
+        self.parser.add_argument("--start_from",
+                                 type=int,
+                                 help="Which epoch to start",
+                                 default=0)
+
         self.parser.add_argument("--model_name",
                                  type=str,
                                  help="the name of the folder to save the model in",
@@ -90,7 +97,8 @@ class MonodepthOptions:
         self.parser.add_argument("--batch_size",
                                  type=int,
                                  help="batch size",
-                                 default=8)
+                                 default=8
+                                 )
         self.parser.add_argument("--learning_rate",
                                  type=float,
                                  help="learning rate",
@@ -153,7 +161,7 @@ class MonodepthOptions:
                                  nargs="+",
                                  type=str,
                                  help="models to load",
-                                 default=["encoder", "depth", "pose_encoder", "pose"])
+                                 default=["swin_encoder", "swin_decoder", "pose_encoder", "pose"])
 
         # LOGGING options
         self.parser.add_argument("--log_frequency",

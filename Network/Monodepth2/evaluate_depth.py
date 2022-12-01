@@ -12,8 +12,13 @@ from utils import readlines
 from options import MonodepthOptions
 import datasets
 import networks
+from swin_transformer_v2 import SwinTransformerV2
 
-cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
+from swin_transformer_v2 import swin_transformer_v2_t, swin_transformer_v2_s, swin_transformer_v2_b, \
+    swin_transformer_v2_l, swin_transformer_v2_h, swin_transformer_v2_g
+
+# This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
+cv2.setNumThreads(0)
 
 
 splits_dir = os.path.join(os.path.dirname(__file__), "splits")
@@ -28,7 +33,7 @@ def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
     """
     thresh = np.maximum((gt / pred), (pred / gt))
-    a1 = (thresh < 1.25     ).mean()
+    a1 = (thresh < 1.25).mean()
     a2 = (thresh < 1.25 ** 2).mean()
     a3 = (thresh < 1.25 ** 3).mean()
 
@@ -74,23 +79,47 @@ def evaluate(opt):
 
         print("-> Loading weights from {}".format(opt.load_weights_folder))
 
-        filenames = readlines(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
-        encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
-        decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
+        filenames = readlines(os.path.join(
+            splits_dir, opt.eval_split, "test_files.txt"))
+
+        #encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
+        #decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
+
+        encoder_path = os.path.join(
+            opt.load_weights_folder, "swin_encoder.pth")
+        decoder_path = os.path.join(
+            opt.load_weights_folder, "swin_decoder.pth")
 
         encoder_dict = torch.load(encoder_path)
+        height = encoder_dict['height'] if 'height' in encoder_dict else 192
+        width = encoder_dict['width'] if 'width' in encoder_dict else 640
+        # print(encoder_dict['height'])
 
+        # dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
+        #                                   encoder_dict['height'], encoder_dict['width'],
+        #                                   [0], 4, is_train=False)
         dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
-                                           encoder_dict['height'], encoder_dict['width'],
+                                           height, width,
                                            [0], 4, is_train=False)
+
         dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)
 
-        encoder = networks.ResnetEncoder(opt.num_layers, False)
-        depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
+        #encoder = networks.ResnetEncoder(opt.num_layers, False)
+        #depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
+
+        encoder = swin_transformer_v2_t(in_channels=3,
+                                        window_size=(6, 20),
+                                        input_resolution=(192, 640),
+                                        sequential_self_attention=False,
+                                        use_checkpoint=False)
+        depth_decoder = networks.Swin_DepthDecoder(
+            num_ch_enc=np.array([96, 192, 384, 768]), scales=range(4)
+        )
 
         model_dict = encoder.state_dict()
-        encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in model_dict})
+        encoder.load_state_dict(
+            {k: v for k, v in encoder_dict.items() if k in model_dict})
         depth_decoder.load_state_dict(torch.load(decoder_path))
 
         encoder.cuda()
@@ -101,7 +130,7 @@ def evaluate(opt):
         pred_disps = []
 
         print("-> Computing predictions with size {}x{}".format(
-            encoder_dict['width'], encoder_dict['height']))
+            height, width,))
 
         with torch.no_grad():
             for data in dataloader:
@@ -109,16 +138,19 @@ def evaluate(opt):
 
                 if opt.post_process:
                     # Post-processed results require each image to have two forward passes
-                    input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
+                    input_color = torch.cat(
+                        (input_color, torch.flip(input_color, [3])), 0)
 
                 output = depth_decoder(encoder(input_color))
 
-                pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
+                pred_disp, _ = disp_to_depth(
+                    output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
 
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
-                    pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
+                    pred_disp = batch_post_process_disparity(
+                        pred_disp[:N], pred_disp[N:, :, ::-1])
 
                 pred_disps.append(pred_disp)
 
@@ -146,7 +178,8 @@ def evaluate(opt):
         quit()
 
     elif opt.eval_split == 'benchmark':
-        save_dir = os.path.join(opt.load_weights_folder, "benchmark_predictions")
+        save_dir = os.path.join(opt.load_weights_folder,
+                                "benchmark_predictions")
         print("-> Saving out benchmark predictions to {}".format(save_dir))
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
@@ -163,7 +196,8 @@ def evaluate(opt):
         quit()
 
     gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
-    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
+    gt_depths = np.load(gt_path, fix_imports=True,
+                        encoding='latin1', allow_pickle=True)["data"]
 
     print("-> Evaluating")
 
@@ -216,11 +250,13 @@ def evaluate(opt):
     if not opt.disable_median_scaling:
         ratios = np.array(ratios)
         med = np.median(ratios)
-        print(" Scaling ratios | med: {:0.3f} | std: {:0.3f}".format(med, np.std(ratios / med)))
+        print(" Scaling ratios | med: {:0.3f} | std: {:0.3f}".format(
+            med, np.std(ratios / med)))
 
     mean_errors = np.array(errors).mean(0)
 
-    print("\n  " + ("{:>8} | " * 7).format("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"))
+    print("\n  " + ("{:>8} | " * 7).format("abs_rel",
+          "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"))
     print(("&{: 8.3f}  " * 7).format(*mean_errors.tolist()) + "\\\\")
     print("\n-> Done!")
 

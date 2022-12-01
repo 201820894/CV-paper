@@ -8,3 +8,9 @@ Presentation/
 *.DS_Store
 *.swp
 Monodepth_simple/
+tmp/
+*.npz
+*.pyc
+*_disp.jpg
+*_disp.npy
+*.npz
